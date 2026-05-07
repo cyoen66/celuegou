@@ -1,58 +1,86 @@
 // @version=2
 
-// 取过去20根K线的最高价，作为震荡区间上沿（阶段阻力位）
+// ── 区间计算 ──────────────────────────────────────────────
+// 取过去20根K线最高价作为阶段阻力位（区间上沿）
 rangeHigh = highest(high, 20);
 
-// 取过去20根K线的最低价，作为震荡区间下沿（阶段支撑位）
+// 取过去20根K线最低价作为阶段支撑位（区间下沿）
 rangeLow = lowest(low, 20);
 
-// 区间高度 = 上沿 - 下沿，后面用来计算目标位（亚当对称性）
+// 区间高度，亚当理论对称性目标位的核心计算依据
 rangeH = rangeHigh - rangeLow;
 
-// 向上突破：当前K线收盘价站上阻力位，且上一根K线还在阻力位下方
-// close > rangeHigh[1]  → 当前收盘突破了上一根计算出的阻力位
-// close[1] <= rangeHigh[1] → 上一根收盘还没突破，确认是这根K线刚突破
+// ── 亚当理论目标位（对称性：区间高度等距复制到突破方向）──
+// 做多目标 = 突破位 + 区间高度（文档公式：A + H）
+longTarget = rangeHigh[1] + rangeH[1];
+
+// 做空目标 = 跌破位 - 区间高度（文档公式：B - H）
+shortTarget = rangeLow[1] - rangeH[1];
+
+// ── 突破检测（手动实现，不用crossover）───────────────────
+// 向上突破：当前收盘站上阻力位，且上一根还在阻力位下方
 breakUp = close > rangeHigh[1] && close[1] <= rangeHigh[1];
 
-// 向下跌破：当前K线收盘价跌破支撑位，且上一根K线还在支撑位上方
-// close < rangeLow[1]  → 当前收盘跌破了上一根计算出的支撑位
-// close[1] >= rangeLow[1] → 上一根收盘还没跌破，确认是这根K线刚跌破
+// 向下跌破：当前收盘跌破支撑位，且上一根还在支撑位上方
 breakDown = close < rangeLow[1] && close[1] >= rangeLow[1];
 
-// 最近5根K线内是否发生过向上突破
-// [1]到[5]分别代表往前第1到第5根K线，用 || 连接，任意一根突破过就算true
-// 用这个代替状态机，不需要 var 变量
-recentBreakUp = breakUp[1] || breakUp[2] || breakUp[3] || breakUp[4] || breakUp[5];
-
-// 最近5根K线内是否发生过向下跌破，逻辑同上
+// ── 最近5根内是否发生过突破（替代var状态机）─────────────
+// 用[1]到[5]的||连接，任意一根发生过突破就返回true
+recentBreakUp   = breakUp[1]   || breakUp[2]   || breakUp[3]   || breakUp[4]   || breakUp[5];
 recentBreakDown = breakDown[1] || breakDown[2] || breakDown[3] || breakDown[4] || breakDown[5];
 
-// 回踩做多确认，三个条件同时成立才触发：
-// ① recentBreakUp         → 最近5根内发生过向上突破
-// ② low <= rangeHigh[1] * 1.003 → 本根K线低点回踩到阻力位附近（允许0.3%误差）
-// ③ close >= rangeHigh[1] * 0.997 → 本根K线收盘仍守在阻力位上方，没跌回区间内
+// ── 回踩做多确认（三个条件缺一不可）─────────────────────
+// ① 最近5根内发生过向上突破
+// ② 本根K线低点回踩到阻力位附近（0.3%容忍带）
+// ③ 本根K线收盘守在阻力位上方，没跌回区间内
 retestLong = recentBreakUp && low <= rangeHigh[1] * 1.003 && close >= rangeHigh[1] * 0.997;
 
-// 反抽做空确认，三个条件同时成立才触发：
-// ① recentBreakDown        → 最近5根内发生过向下跌破
-// ② high >= rangeLow[1] * 0.997 → 本根K线高点反抽到支撑位附近（允许0.3%误差）
-// ③ close <= rangeLow[1] * 1.003 → 本根K线收盘仍压在支撑位下方，没收回区间内
+// ── 反抽做空确认（三个条件缺一不可）─────────────────────
+// ① 最近5根内发生过向下跌破
+// ② 本根K线高点反抽到支撑位附近（0.3%容忍带）
+// ③ 本根K线收盘压在支撑位下方，没收回区间内
 retestShort = recentBreakDown && high >= rangeLow[1] * 0.997 && close <= rangeLow[1] * 1.003;
 
-// 做多预警：回踩确认信号触发时推送通知，direction='buy' 表示买入方向
-alertcondition(retestLong, title='做多信号', direction='buy')
+// ── 止损信号（假突破识别）────────────────────────────────
+// 文档逻辑：回踩后价格重新跌回区间内 = 假突破 = 止损
+// 最近3根内出现过做多入场，但当前收盘重新跌回阻力位下方
+stopLong  = (retestLong[1] || retestLong[2] || retestLong[3])  && close < rangeHigh[1] * 0.997;
 
-// 做空预警：反抽确认信号触发时推送通知，direction='sell' 表示卖出方向
-alertcondition(retestShort, title='做空信号', direction='sell')
+// 最近3根内出现过做空入场，但当前收盘重新站回支撑位上方
+stopShort = (retestShort[1] || retestShort[2] || retestShort[3]) && close > rangeLow[1]  * 1.003;
 
-// 做多箭头：retestLong 为 true 时在K线下方画绿色向上箭头
-// refSeries=low  → 箭头锚定在当根K线的最低价位置
-// placement='bottom' → 显示在K线下方
-// fill=true → 箭头实心填充
-plotShape(retestLong, title='做多入场', shape='arrowUp', color='green', refSeries=low, placement='bottom', fill=true)
+// ── 到达目标位信号 ────────────────────────────────────────
+// 做多入场后，价格高点触达目标位 = 考虑止盈
+hitLongTarget  = (retestLong[1]  || retestLong[2]  || retestLong[3]  || retestLong[4]  || retestLong[5])  && high >= longTarget;
 
-// 做空箭头：retestShort 为 true 时在K线上方画红色向下箭头
-// refSeries=high → 箭头锚定在当根K线的最高价位置
-// placement='top' → 显示在K线上方
-// fill=true → 箭头实心填充
-plotShape(retestShort, title='做空入场', shape='arrowDown', color='red', refSeries=high, placement='top', fill=true)
+// 做空入场后，价格低点触达目标位 = 考虑止盈
+hitShortTarget = (retestShort[1] || retestShort[2] || retestShort[3] || retestShort[4] || retestShort[5]) && low  <= shortTarget;
+
+// ── 警报 ──────────────────────────────────────────────────
+alertcondition(retestLong,    title='做多入场信号', direction='buy');
+alertcondition(retestShort,   title='做空入场信号', direction='sell');
+alertcondition(stopLong,      title='多头止损信号', direction='sell');
+alertcondition(stopShort,     title='空头止损信号', direction='buy');
+alertcondition(hitLongTarget, title='多头目标到达', direction='sell');
+alertcondition(hitShortTarget,title='空头目标到达', direction='buy');
+
+// ── 入场箭头 ──────────────────────────────────────────────
+// 做多入场：K线下方绿色向上箭头
+plotShape(retestLong,  title='做多入场', shape='arrowUp',   color='green', refSeries=low,        placement='bottom', fill=true);
+
+// 做空入场：K线上方红色向下箭头
+plotShape(retestShort, title='做空入场', shape='arrowDown', color='red',   refSeries=high,       placement='top',    fill=true);
+
+// ── 止损信号 ──────────────────────────────────────────────
+// 假突破止损：K线上方橙色向下箭头（多头假突破，应离场）
+plotShape(stopLong,    title='多头止损', shape='arrowDown', color='orange', refSeries=high,      placement='top',    fill=true);
+
+// 假跌破止损：K线下方橙色向上箭头（空头假跌破，应离场）
+plotShape(stopShort,   title='空头止损', shape='arrowUp',   color='orange', refSeries=low,       placement='bottom', fill=true);
+
+// ── 目标位到达信号 ────────────────────────────────────────
+// 多头目标到达：在目标价位附近显示黄色菱形标记
+plotShape(hitLongTarget,  title='多头目标', shape='circle', color='yellow', refSeries=longTarget,  placement='top',    fill=true);
+
+// 空头目标到达：在目标价位附近显示黄色菱形标记
+plotShape(hitShortTarget, title='空头目标', shape='circle', color='yellow', refSeries=shortTarget, placement='bottom', fill=true);
